@@ -1,5 +1,8 @@
 #include "app.h"
 
+static const int SETTINGS_SCHEMA_VERSION = 3;
+static const wchar_t *AUTOSTART_REGISTRY_PATH = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+
 static BOOL BuildSettingsDirectoryPath(wchar_t *path, size_t capacity) {
     DWORD length;
 
@@ -36,6 +39,24 @@ static BOOL BuildSettingsFilePath(wchar_t *path, size_t capacity) {
     }
 
     return SUCCEEDED(StringCchCatW(path, capacity, L"\\settings.ini"));
+}
+
+static UiLanguage GetDefaultUiLanguage(void) {
+    LANGID lang_id = GetUserDefaultUILanguage();
+    if (PRIMARYLANGID(lang_id) == LANG_UKRAINIAN) {
+        return UI_LANGUAGE_UK;
+    }
+    return UI_LANGUAGE_EN;
+}
+
+static BOOL BuildAutostartCommandLine(wchar_t *buffer, size_t capacity) {
+    wchar_t module_path[MAX_PATH];
+
+    if (GetModuleFileNameW(NULL, module_path, MAX_PATH) == 0) {
+        return FALSE;
+    }
+
+    return SUCCEEDED(StringCchPrintfW(buffer, capacity, L"\"%ls\"", module_path));
 }
 
 static BOOL IsExtendedVirtualKey(UINT vk) {
@@ -91,8 +112,10 @@ static void GetVirtualKeyDisplayName(UINT vk, wchar_t *buffer, size_t capacity) 
 
 void SetDefaultSettings(AppSettings *settings) {
     ZeroMemory(settings, sizeof(*settings));
-    settings->logging_enabled = TRUE;
+    settings->logging_enabled = FALSE;
     settings->sound_enabled = FALSE;
+    settings->autostart_enabled = FALSE;
+    settings->ui_language = GetDefaultUiLanguage();
     settings->selected_hotkey.vk = DEFAULT_SELECTED_HOTKEY_VK;
     settings->selected_hotkey.modifiers = DEFAULT_SELECTED_HOTKEY_MODIFIERS;
     settings->lastword_hotkey.vk = DEFAULT_LASTWORD_HOTKEY_VK;
@@ -125,18 +148,32 @@ UINT CaptureCurrentModifiers(void) {
 
 void LoadSettings(AppSettings *settings) {
     wchar_t path[MAX_PATH];
+    int settings_version;
 
     SetDefaultSettings(settings);
     if (!BuildSettingsFilePath(path, sizeof(path) / sizeof(path[0]))) {
+        settings->autostart_enabled = IsAutostartEnabled();
         return;
     }
 
-    settings->logging_enabled = GetPrivateProfileIntW(L"General", L"LoggingEnabled", settings->logging_enabled, path) != 0;
-    settings->sound_enabled = GetPrivateProfileIntW(L"General", L"SoundEnabled", settings->sound_enabled, path) != 0;
+    settings_version = GetPrivateProfileIntW(L"General", L"SettingsVersion", 0, path);
+    if (settings_version >= SETTINGS_SCHEMA_VERSION) {
+        settings->sound_enabled = GetPrivateProfileIntW(L"General", L"SoundEnabled", settings->sound_enabled, path) != 0;
+        settings->logging_enabled = GetPrivateProfileIntW(L"General", L"LoggingEnabled", settings->logging_enabled, path) != 0;
+    } else {
+        settings->sound_enabled = FALSE;
+        settings->logging_enabled = FALSE;
+    }
+    settings->ui_language = GetPrivateProfileIntW(L"General", L"UiLanguage", settings->ui_language, path);
     settings->selected_hotkey.vk = (UINT)GetPrivateProfileIntW(L"Hotkeys", L"SelectedVk", (int)settings->selected_hotkey.vk, path);
     settings->selected_hotkey.modifiers = (UINT)GetPrivateProfileIntW(L"Hotkeys", L"SelectedModifiers", (int)settings->selected_hotkey.modifiers, path);
     settings->lastword_hotkey.vk = (UINT)GetPrivateProfileIntW(L"Hotkeys", L"LastWordVk", (int)settings->lastword_hotkey.vk, path);
     settings->lastword_hotkey.modifiers = (UINT)GetPrivateProfileIntW(L"Hotkeys", L"LastWordModifiers", (int)settings->lastword_hotkey.modifiers, path);
+    settings->autostart_enabled = IsAutostartEnabled();
+
+    if (settings->ui_language != UI_LANGUAGE_EN && settings->ui_language != UI_LANGUAGE_UK) {
+        settings->ui_language = GetDefaultUiLanguage();
+    }
 
     NormalizeHotkeyBinding(&settings->selected_hotkey);
     NormalizeHotkeyBinding(&settings->lastword_hotkey);
@@ -150,11 +187,17 @@ void SaveSettings(const AppSettings *settings) {
         return;
     }
 
+    StringCchPrintfW(number, sizeof(number) / sizeof(number[0]), L"%d", SETTINGS_SCHEMA_VERSION);
+    WritePrivateProfileStringW(L"General", L"SettingsVersion", number, path);
+
     StringCchPrintfW(number, sizeof(number) / sizeof(number[0]), L"%d", settings->logging_enabled ? 1 : 0);
     WritePrivateProfileStringW(L"General", L"LoggingEnabled", number, path);
 
     StringCchPrintfW(number, sizeof(number) / sizeof(number[0]), L"%d", settings->sound_enabled ? 1 : 0);
     WritePrivateProfileStringW(L"General", L"SoundEnabled", number, path);
+
+    StringCchPrintfW(number, sizeof(number) / sizeof(number[0]), L"%d", settings->ui_language);
+    WritePrivateProfileStringW(L"General", L"UiLanguage", number, path);
 
     StringCchPrintfW(number, sizeof(number) / sizeof(number[0]), L"%u", settings->selected_hotkey.vk);
     WritePrivateProfileStringW(L"Hotkeys", L"SelectedVk", number, path);
@@ -251,4 +294,51 @@ void LogDebug(const wchar_t *format, ...) {
 
     fputws(line, file);
     fclose(file);
+}
+
+BOOL IsAutostartEnabled(void) {
+    HKEY key;
+    LONG result;
+    wchar_t value[MAX_PATH * 2];
+    DWORD type = 0;
+    DWORD size = sizeof(value);
+
+    result = RegOpenKeyExW(HKEY_CURRENT_USER, AUTOSTART_REGISTRY_PATH, 0, KEY_READ, &key);
+    if (result != ERROR_SUCCESS) {
+        return FALSE;
+    }
+
+    result = RegQueryValueExW(key, APP_NAME, NULL, &type, (LPBYTE)value, &size);
+    RegCloseKey(key);
+    return result == ERROR_SUCCESS && type == REG_SZ && value[0] != L'\0';
+}
+
+BOOL SetAutostartEnabled(BOOL enabled) {
+    HKEY key;
+    LONG result;
+
+    result = RegCreateKeyExW(HKEY_CURRENT_USER, AUTOSTART_REGISTRY_PATH, 0, NULL, 0,
+        KEY_SET_VALUE | KEY_QUERY_VALUE, NULL, &key, NULL);
+    if (result != ERROR_SUCCESS) {
+        return FALSE;
+    }
+
+    if (enabled) {
+        wchar_t command[MAX_PATH * 2];
+        if (!BuildAutostartCommandLine(command, sizeof(command) / sizeof(command[0]))) {
+            RegCloseKey(key);
+            return FALSE;
+        }
+
+        result = RegSetValueExW(key, APP_NAME, 0, REG_SZ,
+            (const BYTE *)command, (DWORD)((wcslen(command) + 1) * sizeof(wchar_t)));
+    } else {
+        result = RegDeleteValueW(key, APP_NAME);
+        if (result == ERROR_FILE_NOT_FOUND) {
+            result = ERROR_SUCCESS;
+        }
+    }
+
+    RegCloseKey(key);
+    return result == ERROR_SUCCESS;
 }

@@ -12,6 +12,7 @@
 #include <strsafe.h>
 #include <wchar.h>
 #include <stdarg.h>
+#include "resource.h"
 
 #define APP_NAME L"KeyboardSwitcherC"
 #define APP_CLASS_NAME L"KeyboardSwitcherCWindow"
@@ -52,6 +53,21 @@
 #define IDC_SETTINGS_STATUS 41011
 #define IDC_SETTINGS_SAVE 41012
 #define IDC_SETTINGS_CANCEL 41013
+#define IDC_SETTINGS_GITHUB 41014
+#define IDC_SETTINGS_AUTOSTART 41015
+#define IDC_SETTINGS_LANGUAGE_LABEL 41016
+#define IDC_SETTINGS_LANGUAGE_COMBO 41017
+#define IDC_SETTINGS_VERSION 41018
+#define IDC_SETTINGS_STORE 41019
+#define IDC_SETTINGS_GROUP_SELECTED 41020
+#define IDC_SETTINGS_GROUP_LASTWORD 41021
+#define IDC_SETTINGS_BRAND 41022
+
+#ifdef _DEBUG
+#define APP_VERSION L"0.1.1-debug"
+#else
+#define APP_VERSION L"0.1.1"
+#endif
 
 #define DEFAULT_SELECTED_HOTKEY_VK VK_PAUSE_KEY
 #define DEFAULT_SELECTED_HOTKEY_MODIFIERS 0
@@ -100,6 +116,8 @@ typedef struct HotkeyBinding {
 typedef struct AppSettings {
     BOOL logging_enabled;
     BOOL sound_enabled;
+    BOOL autostart_enabled;
+    int ui_language;
     HotkeyBinding selected_hotkey;
     HotkeyBinding lastword_hotkey;
 } AppSettings;
@@ -107,10 +125,21 @@ typedef struct AppSettings {
 typedef struct SettingsControls {
     HWND logging_checkbox;
     HWND sound_checkbox;
+    HWND autostart_checkbox;
     HWND selected_value;
     HWND lastword_value;
     HWND status_value;
+    HWND github_link;
+    HWND language_combo;
+    HWND version_value;
+    HWND store_button;
+    HWND brand_logo;
 } SettingsControls;
+
+typedef enum UiLanguage {
+    UI_LANGUAGE_EN = 0,
+    UI_LANGUAGE_UK = 1
+} UiLanguage;
 
 typedef enum TransformRequestMode {
     TRANSFORM_MODE_NONE = 0,
@@ -143,6 +172,8 @@ BOOL HotkeyBindingsEqual(const HotkeyBinding *left, const HotkeyBinding *right);
 BOOL HotkeyOwnsEvent(const HotkeyBinding *binding, const KBDLLHOOKSTRUCT *kbd);
 void PlaySwitchSound(void);
 void LogDebug(const wchar_t *format, ...);
+BOOL IsAutostartEnabled(void);
+BOOL SetAutostartEnabled(BOOL enabled);
 
 BOOL RefreshInstalledLayouts(void);
 const LayoutDef *GetCurrentLayoutDef(void);

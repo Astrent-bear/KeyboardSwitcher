@@ -23,6 +23,8 @@ The app converts text by key-position mapping, not dictionary translation.
 - If both actions use the same hotkey, the app tries:
   1. selected text conversion
   2. last word conversion as fallback
+- Switch sound is disabled by default
+- Debug logging is disabled by default
 - Settings are stored in `%APPDATA%\KeyboardSwitcherC\settings.ini`
 
 ### Current features
@@ -34,11 +36,15 @@ The app converts text by key-position mapping, not dictionary translation.
 - layout switching by the current Windows input-language order
 - fallback internal order if the system order cannot be resolved
 - settings window from tray menu
+- auto-save settings UI without `Save/Cancel`
 - configurable hotkeys for:
   - selected text conversion
   - last word conversion
 - optional switch sound
 - optional debug log
+- optional start with Windows
+- English and Ukrainian UI
+- version label and project links in settings
 
 ### Supported layout mappings
 
@@ -81,7 +87,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 - `src\ui.c` - tray UI and settings window
 - `src\input.c` - keyboard and mouse hooks, hotkey routing, last-word tracking
 - `src\transform.c` - layout detection, conversion, clipboard flow
-- `src\settings.c` - settings, logging, sound, hotkey formatting
+- `src\settings.c` - settings, logging, sound, autostart, hotkey formatting
 - `src\app.h` - shared declarations
 
 ### Community
@@ -111,6 +117,8 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 - Якщо обидві дії використовують одну гарячу клавішу, програма пробує:
   1. перетворити виділений текст
   2. якщо не вийшло, перетворити останнє слово
+- Звук перемикання за замовчуванням вимкнений
+- Debug log за замовчуванням вимкнений
 - Налаштування зберігаються в `%APPDATA%\KeyboardSwitcherC\settings.ini`
 
 ### Поточні можливості
@@ -122,11 +130,15 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 - перемикання розкладки за поточним порядком мов введення Windows
 - резервний внутрішній порядок, якщо системний порядок визначити не вдалося
 - вікно налаштувань із меню трея
+- інтерфейс налаштувань з автозбереженням без `Save/Cancel`
 - налаштовувані гарячі клавіші для:
   - перетворення виділеного тексту
   - перетворення останнього слова
 - опційний звук перемикання
-- опційний debug-log
+- опційний debug log
+- опційний автозапуск разом із Windows
+- інтерфейс англійською та українською
+- відображення версії та посилань на проєкт у налаштуваннях
 
 ### Підтримувані мапінги розкладок
 
@@ -169,7 +181,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 - `src\ui.c` - трей-інтерфейс і вікно налаштувань
 - `src\input.c` - keyboard/mouse hook, маршрутизація hotkey, трекінг останнього слова
 - `src\transform.c` - визначення розкладок, перетворення, clipboard-сценарій
-- `src\settings.c` - налаштування, логування, звук, форматування hotkey
+- `src\settings.c` - налаштування, логування, звук, автозапуск, форматування hotkey
 - `src\app.h` - спільні оголошення
 
 ### Для спільноти
