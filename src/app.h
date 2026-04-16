@@ -33,6 +33,7 @@
 #define CLIPBOARD_WAIT_TIMEOUT_MS 500
 #define CLIPBOARD_POLL_DELAY_MS 10
 #define PASTE_SETTLE_DELAY_MS 100
+#define CLIPBOARD_MAX_FORMATS 128
 #define LAYOUT_TIMER_INTERVAL_MS 350
 #define SETTINGS_MARGIN 14
 
@@ -64,9 +65,9 @@
 #define IDC_SETTINGS_BRAND 41022
 
 #ifdef _DEBUG
-#define APP_VERSION L"0.2.0-debug"
+#define APP_VERSION L"0.3.0-debug"
 #else
-#define APP_VERSION L"0.2.0"
+#define APP_VERSION L"0.3.0"
 #endif
 
 #define DEFAULT_SELECTED_HOTKEY_VK VK_PAUSE_KEY
@@ -90,19 +91,41 @@ typedef struct LayoutDef {
     size_t key_count;
 } LayoutDef;
 
-typedef struct ClipboardTextBackup {
-    BOOL has_text;
-    wchar_t *text;
-} ClipboardTextBackup;
+typedef enum ClipboardItemKind {
+    CLIPBOARD_ITEM_EMPTY = 0,
+    CLIPBOARD_ITEM_GLOBAL = 1,
+    CLIPBOARD_ITEM_BITMAP = 2,
+    CLIPBOARD_ITEM_ENHMETAFILE = 3
+} ClipboardItemKind;
+
+typedef struct ClipboardFormatSnapshot {
+    UINT format;
+    ClipboardItemKind kind;
+    union {
+        HGLOBAL global;
+        HBITMAP bitmap;
+        HENHMETAFILE enh_metafile;
+    } data;
+} ClipboardFormatSnapshot;
+
+typedef struct ClipboardSnapshot {
+    ClipboardFormatSnapshot items[CLIPBOARD_MAX_FORMATS];
+    size_t count;
+    DWORD sequence;
+} ClipboardSnapshot;
 
 typedef struct RestoreClipboardContext {
-    BOOL has_text;
-    wchar_t *text;
+    ClipboardSnapshot snapshot;
     DWORD delay_ms;
+    BOOL require_marker;
+    UINT marker_format;
+    DWORD marker_value;
 } RestoreClipboardContext;
 
 typedef struct LastWordTracker {
     HWND hwnd;
+    HWND focus_hwnd;
+    HWND caret_hwnd;
     wchar_t text[LAST_WORD_MAX];
     int length;
     const LayoutDef *source_layout;
@@ -158,6 +181,8 @@ extern HINSTANCE g_instance;
 extern HWND g_main_window;
 extern ULONGLONG g_last_pause_tick;
 extern volatile LONG g_transform_running;
+extern HANDLE g_clipboard_update_event;
+extern volatile LONG g_clipboard_waiting;
 extern LastWordTracker g_last_word;
 extern AppSettings g_settings;
 
@@ -182,6 +207,7 @@ BOOL TransformLastWord(void);
 void ResetLastWordTracker(void);
 void UpdateLastWordTrackerFromKey(const KBDLLHOOKSTRUCT *kbd);
 int RunLayoutSelfTest(void);
+void NotifyClipboardUpdated(void);
 
 void CreateTrayIcons(void);
 void DestroyTrayIcons(void);

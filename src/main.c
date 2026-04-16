@@ -4,6 +4,8 @@ HINSTANCE g_instance = NULL;
 HWND g_main_window = NULL;
 ULONGLONG g_last_pause_tick = 0;
 volatile LONG g_transform_running = 0;
+HANDLE g_clipboard_update_event = NULL;
+volatile LONG g_clipboard_waiting = 0;
 LastWordTracker g_last_word = { 0 };
 AppSettings g_settings = { 0 };
 
@@ -23,6 +25,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev, PWSTR cmd, int show) {
     if (cmd != NULL && wcsstr(cmd, L"--self-test") != NULL) {
         return RunLayoutSelfTest();
     }
+
+    g_clipboard_update_event = CreateEventW(NULL, TRUE, FALSE, NULL);
 
     RefreshInstalledLayouts();
     CreateTrayIcons();
@@ -77,6 +81,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev, PWSTR cmd, int show) {
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
+    }
+
+    if (g_clipboard_update_event != NULL) {
+        CloseHandle(g_clipboard_update_event);
+        g_clipboard_update_event = NULL;
     }
 
     return (int)msg.wParam;

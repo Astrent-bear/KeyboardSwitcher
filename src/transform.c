@@ -5,6 +5,7 @@
 static const LayoutDef *g_installed_layouts[MAX_INSTALLED_LAYOUTS] = { 0 };
 static HKL g_installed_hkls[MAX_INSTALLED_LAYOUTS] = { 0 };
 static size_t g_installed_layout_count = 0;
+static volatile LONG g_clipboard_marker_counter = 0;
 
 #include "layout_data.inc"
 
@@ -63,36 +64,217 @@ static BOOL TryOpenClipboardWithRetry(HWND owner) {
     return FALSE;
 }
 
-static BOOL TryGetClipboardTextBackup(ClipboardTextBackup *backup) {
-    HANDLE handle;
-    const wchar_t *locked;
+void NotifyClipboardUpdated(void) {
+    if (g_clipboard_update_event != NULL &&
+        InterlockedCompareExchange(&g_clipboard_waiting, 0, 0) != 0) {
+        SetEvent(g_clipboard_update_event);
+    }
+}
 
-    backup->has_text = FALSE;
-    backup->text = NULL;
+static UINT GetClipboardMarkerFormat(void) {
+    static UINT marker_format = 0;
+
+    if (marker_format == 0) {
+        marker_format = RegisterClipboardFormatW(L"Cwitcher.ClipboardMarker");
+    }
+
+    return marker_format;
+}
+
+static void FreeClipboardSnapshot(ClipboardSnapshot *snapshot) {
+    size_t i;
+
+    if (snapshot == NULL) {
+        return;
+    }
+
+    for (i = 0; i < snapshot->count; ++i) {
+        ClipboardFormatSnapshot *item = &snapshot->items[i];
+        switch (item->kind) {
+        case CLIPBOARD_ITEM_GLOBAL:
+            if (item->data.global != NULL) {
+                GlobalFree(item->data.global);
+            }
+            break;
+        case CLIPBOARD_ITEM_BITMAP:
+            if (item->data.bitmap != NULL) {
+                DeleteObject(item->data.bitmap);
+            }
+            break;
+        case CLIPBOARD_ITEM_ENHMETAFILE:
+            if (item->data.enh_metafile != NULL) {
+                DeleteEnhMetaFile(item->data.enh_metafile);
+            }
+            break;
+        default:
+            break;
+        }
+    }
+
+    ZeroMemory(snapshot, sizeof(*snapshot));
+}
+
+static HGLOBAL DuplicateGlobalClipboardHandle(HANDLE handle) {
+    SIZE_T bytes;
+    const void *source;
+    void *target;
+    HGLOBAL copy;
+
+    if (handle == NULL) {
+        return NULL;
+    }
+
+    bytes = GlobalSize(handle);
+    if (bytes == 0) {
+        return NULL;
+    }
+
+    source = GlobalLock(handle);
+    if (source == NULL) {
+        return NULL;
+    }
+
+    copy = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (copy == NULL) {
+        GlobalUnlock(handle);
+        return NULL;
+    }
+
+    target = GlobalLock(copy);
+    if (target == NULL) {
+        GlobalUnlock(handle);
+        GlobalFree(copy);
+        return NULL;
+    }
+
+    memcpy(target, source, bytes);
+    GlobalUnlock(copy);
+    GlobalUnlock(handle);
+    return copy;
+}
+
+static HGLOBAL CreateGlobalMemoryCopy(const void *data, SIZE_T bytes) {
+    HGLOBAL global;
+    void *target;
+
+    if (data == NULL || bytes == 0) {
+        return NULL;
+    }
+
+    global = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (global == NULL) {
+        return NULL;
+    }
+
+    target = GlobalLock(global);
+    if (target == NULL) {
+        GlobalFree(global);
+        return NULL;
+    }
+
+    memcpy(target, data, bytes);
+    GlobalUnlock(global);
+    return global;
+}
+
+static HBITMAP DuplicateClipboardBitmap(HANDLE handle) {
+    if (handle == NULL) {
+        return NULL;
+    }
+
+    return (HBITMAP)CopyImage((HBITMAP)handle, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
+}
+
+static HENHMETAFILE DuplicateClipboardEnhMetafile(HANDLE handle) {
+    if (handle == NULL) {
+        return NULL;
+    }
+
+    return CopyEnhMetaFileW((HENHMETAFILE)handle, NULL);
+}
+
+static BOOL IsUnsupportedClipboardFormat(UINT format) {
+    return format == CF_OWNERDISPLAY || format == CF_PALETTE;
+}
+
+static BOOL SnapshotClipboardItem(UINT format, HANDLE handle, ClipboardFormatSnapshot *item) {
+    ZeroMemory(item, sizeof(*item));
+    item->format = format;
+
+    if (format == CF_BITMAP || format == CF_DSPBITMAP) {
+        item->kind = CLIPBOARD_ITEM_BITMAP;
+        item->data.bitmap = DuplicateClipboardBitmap(handle);
+        return item->data.bitmap != NULL;
+    }
+
+    if (format == CF_ENHMETAFILE || format == CF_DSPENHMETAFILE) {
+        item->kind = CLIPBOARD_ITEM_ENHMETAFILE;
+        item->data.enh_metafile = DuplicateClipboardEnhMetafile(handle);
+        return item->data.enh_metafile != NULL;
+    }
+
+    if (IsUnsupportedClipboardFormat(format)) {
+        return FALSE;
+    }
+
+    item->kind = CLIPBOARD_ITEM_GLOBAL;
+    item->data.global = DuplicateGlobalClipboardHandle(handle);
+    return item->data.global != NULL;
+}
+
+static BOOL TrySnapshotClipboard(ClipboardSnapshot *snapshot) {
+    UINT format;
+    DWORD enum_error;
+
+    ZeroMemory(snapshot, sizeof(*snapshot));
 
     if (!TryOpenClipboardWithRetry(g_main_window)) {
         return FALSE;
     }
 
-    if (!IsClipboardFormatAvailable(CF_UNICODETEXT)) {
-        CloseClipboard();
-        return TRUE;
+    snapshot->sequence = GetClipboardSequenceNumber();
+    format = 0;
+    SetLastError(ERROR_SUCCESS);
+
+    while ((format = EnumClipboardFormats(format)) != 0) {
+        HANDLE handle;
+        ClipboardFormatSnapshot item;
+
+        if (snapshot->count >= CLIPBOARD_MAX_FORMATS) {
+            LogDebug(L"Clipboard snapshot failed: too many formats.");
+            CloseClipboard();
+            FreeClipboardSnapshot(snapshot);
+            return FALSE;
+        }
+
+        handle = GetClipboardData(format);
+        if (handle == NULL) {
+            LogDebug(L"Clipboard snapshot failed: format %u has no handle.", format);
+            CloseClipboard();
+            FreeClipboardSnapshot(snapshot);
+            return FALSE;
+        }
+
+        if (!SnapshotClipboardItem(format, handle, &item)) {
+            LogDebug(L"Clipboard snapshot failed: unsupported or non-copyable format %u.", format);
+            CloseClipboard();
+            FreeClipboardSnapshot(snapshot);
+            return FALSE;
+        }
+
+        snapshot->items[snapshot->count++] = item;
+        SetLastError(ERROR_SUCCESS);
     }
 
-    handle = GetClipboardData(CF_UNICODETEXT);
-    if (handle == NULL) {
-        CloseClipboard();
-        return TRUE;
-    }
-
-    locked = (const wchar_t *)GlobalLock(handle);
-    if (locked != NULL) {
-        backup->text = DupWideString(locked);
-        backup->has_text = backup->text != NULL;
-        GlobalUnlock(handle);
-    }
-
+    enum_error = GetLastError();
     CloseClipboard();
+    if (enum_error != ERROR_SUCCESS) {
+        LogDebug(L"Clipboard snapshot failed: EnumClipboardFormats Win32=%lu.", enum_error);
+        FreeClipboardSnapshot(snapshot);
+        return FALSE;
+    }
+
+    LogDebug(L"Clipboard snapshot ok. Formats=%zu.", snapshot->count);
     return TRUE;
 }
 
@@ -138,78 +320,185 @@ static BOOL TryReadClipboardText(wchar_t **text) {
     return TRUE;
 }
 
-static BOOL TryWriteClipboardText(const wchar_t *text) {
-    HGLOBAL global;
-    wchar_t *buffer;
+static HGLOBAL CreateClipboardTextHandle(const wchar_t *text) {
     size_t bytes;
 
+    bytes = (wcslen(text) + 1) * sizeof(wchar_t);
+    return CreateGlobalMemoryCopy(text, bytes);
+}
+
+static HGLOBAL CreateClipboardMarkerHandle(DWORD marker_value) {
+    return CreateGlobalMemoryCopy(&marker_value, sizeof(marker_value));
+}
+
+static BOOL ClipboardHasMarkerOpen(UINT marker_format, DWORD marker_value) {
+    HANDLE handle;
+    const DWORD *locked;
+    BOOL matches;
+
+    if (marker_format == 0 || !IsClipboardFormatAvailable(marker_format)) {
+        return FALSE;
+    }
+
+    handle = GetClipboardData(marker_format);
+    if (handle == NULL) {
+        return FALSE;
+    }
+
+    locked = (const DWORD *)GlobalLock(handle);
+    if (locked == NULL) {
+        return FALSE;
+    }
+
+    matches = *locked == marker_value;
+    GlobalUnlock(handle);
+    return matches;
+}
+
+static BOOL TryWriteClipboardTextForPaste(const wchar_t *text, UINT marker_format, DWORD marker_value, BOOL *marker_written) {
+    HGLOBAL text_global;
+    HGLOBAL marker_global;
+
+    *marker_written = FALSE;
+    text_global = CreateClipboardTextHandle(text);
+    if (text_global == NULL) {
+        return FALSE;
+    }
+
     if (!TryOpenClipboardWithRetry(g_main_window)) {
+        GlobalFree(text_global);
         return FALSE;
     }
 
     if (!EmptyClipboard()) {
         CloseClipboard();
+        GlobalFree(text_global);
         return FALSE;
     }
 
-    bytes = (wcslen(text) + 1) * sizeof(wchar_t);
-    global = GlobalAlloc(GMEM_MOVEABLE, bytes);
-    if (global == NULL) {
+    if (SetClipboardData(CF_UNICODETEXT, text_global) == NULL) {
         CloseClipboard();
+        GlobalFree(text_global);
         return FALSE;
     }
 
-    buffer = (wchar_t *)GlobalLock(global);
-    if (buffer == NULL) {
-        GlobalFree(global);
-        CloseClipboard();
-        return FALSE;
-    }
+    text_global = NULL;
+    if (marker_format != 0) {
+        marker_global = CreateClipboardMarkerHandle(marker_value);
+        if (marker_global != NULL) {
+            if (SetClipboardData(marker_format, marker_global) != NULL) {
+                *marker_written = TRUE;
+                marker_global = NULL;
+            }
 
-    memcpy(buffer, text, bytes);
-    GlobalUnlock(global);
-
-    if (SetClipboardData(CF_UNICODETEXT, global) == NULL) {
-        GlobalFree(global);
-        CloseClipboard();
-        return FALSE;
+            if (marker_global != NULL) {
+                GlobalFree(marker_global);
+            }
+        }
     }
 
     CloseClipboard();
     return TRUE;
 }
 
+static BOOL TryRestoreClipboardSnapshot(ClipboardSnapshot *snapshot, BOOL require_marker, UINT marker_format, DWORD marker_value) {
+    size_t i;
+    BOOL ok = TRUE;
+
+    if (!TryOpenClipboardWithRetry(g_main_window)) {
+        FreeClipboardSnapshot(snapshot);
+        return FALSE;
+    }
+
+    if (require_marker && !ClipboardHasMarkerOpen(marker_format, marker_value)) {
+        CloseClipboard();
+        LogDebug(L"Clipboard restore skipped: clipboard owner changed.");
+        FreeClipboardSnapshot(snapshot);
+        return TRUE;
+    }
+
+    if (!EmptyClipboard()) {
+        CloseClipboard();
+        FreeClipboardSnapshot(snapshot);
+        return FALSE;
+    }
+
+    for (i = 0; i < snapshot->count; ++i) {
+        ClipboardFormatSnapshot *item = &snapshot->items[i];
+        HANDLE handle = NULL;
+
+        switch (item->kind) {
+        case CLIPBOARD_ITEM_GLOBAL:
+            handle = item->data.global;
+            break;
+        case CLIPBOARD_ITEM_BITMAP:
+            handle = item->data.bitmap;
+            break;
+        case CLIPBOARD_ITEM_ENHMETAFILE:
+            handle = item->data.enh_metafile;
+            break;
+        default:
+            break;
+        }
+
+        if (handle == NULL) {
+            continue;
+        }
+
+        if (SetClipboardData(item->format, handle) == NULL) {
+            ok = FALSE;
+            continue;
+        }
+
+        item->kind = CLIPBOARD_ITEM_EMPTY;
+        ZeroMemory(&item->data, sizeof(item->data));
+    }
+
+    CloseClipboard();
+    FreeClipboardSnapshot(snapshot);
+    LogDebug(L"Clipboard snapshot restored. Ok=%d.", ok ? 1 : 0);
+    return ok;
+}
+
 static DWORD WINAPI RestoreClipboardThread(LPVOID param) {
     RestoreClipboardContext *ctx = (RestoreClipboardContext *)param;
 
     if (ctx->delay_ms > 0) {
-        Sleep(ctx->delay_ms);
+        HANDLE timer = CreateWaitableTimerW(NULL, TRUE, NULL);
+        if (timer != NULL) {
+            LARGE_INTEGER due_time;
+            due_time.QuadPart = -((LONGLONG)ctx->delay_ms * 10000);
+            if (SetWaitableTimer(timer, &due_time, 0, NULL, NULL, FALSE)) {
+                WaitForSingleObject(timer, INFINITE);
+            }
+            CloseHandle(timer);
+        } else {
+            Sleep(ctx->delay_ms);
+        }
     }
 
-    if (ctx->has_text && ctx->text != NULL) {
-        TryWriteClipboardText(ctx->text);
-    } else {
-        TryClearClipboard();
-    }
-
-    LogDebug(L"Clipboard text restored.");
-    free(ctx->text);
+    TryRestoreClipboardSnapshot(&ctx->snapshot, ctx->require_marker, ctx->marker_format, ctx->marker_value);
     free(ctx);
     return 0;
 }
 
-static void QueueRestoreClipboardText(const ClipboardTextBackup *backup, DWORD delay_ms) {
+static void QueueRestoreClipboardSnapshot(ClipboardSnapshot *snapshot, DWORD delay_ms, BOOL require_marker, UINT marker_format, DWORD marker_value) {
     RestoreClipboardContext *ctx;
     HANDLE thread;
 
     ctx = (RestoreClipboardContext *)malloc(sizeof(RestoreClipboardContext));
     if (ctx == NULL) {
+        TryRestoreClipboardSnapshot(snapshot, require_marker, marker_format, marker_value);
         return;
     }
 
-    ctx->has_text = backup->has_text;
-    ctx->text = backup->text ? DupWideString(backup->text) : NULL;
+    ZeroMemory(ctx, sizeof(*ctx));
+    ctx->snapshot = *snapshot;
     ctx->delay_ms = delay_ms;
+    ctx->require_marker = require_marker;
+    ctx->marker_format = marker_format;
+    ctx->marker_value = marker_value;
+    ZeroMemory(snapshot, sizeof(*snapshot));
 
     thread = CreateThread(NULL, 0, RestoreClipboardThread, ctx, 0, NULL);
     if (thread != NULL) {
@@ -217,20 +506,55 @@ static void QueueRestoreClipboardText(const ClipboardTextBackup *backup, DWORD d
         return;
     }
 
-    free(ctx->text);
+    TryRestoreClipboardSnapshot(&ctx->snapshot, require_marker, marker_format, marker_value);
     free(ctx);
 }
 
 static BOOL WaitForClipboardChange(DWORD initial_sequence, DWORD timeout_ms) {
-    DWORD started = GetTickCount();
+    DWORD started;
 
-    while ((GetTickCount() - started) < timeout_ms) {
-        if (GetClipboardSequenceNumber() != initial_sequence) {
-            return TRUE;
-        }
-        Sleep(CLIPBOARD_POLL_DELAY_MS);
+    if (GetClipboardSequenceNumber() != initial_sequence) {
+        return TRUE;
     }
 
+    if (g_clipboard_update_event == NULL) {
+        started = GetTickCount();
+        while ((GetTickCount() - started) < timeout_ms) {
+            if (GetClipboardSequenceNumber() != initial_sequence) {
+                return TRUE;
+            }
+            Sleep(CLIPBOARD_POLL_DELAY_MS);
+        }
+
+        return FALSE;
+    }
+
+    ResetEvent(g_clipboard_update_event);
+    InterlockedExchange(&g_clipboard_waiting, 1);
+
+    if (GetClipboardSequenceNumber() != initial_sequence) {
+        InterlockedExchange(&g_clipboard_waiting, 0);
+        return TRUE;
+    }
+
+    started = GetTickCount();
+    while ((GetTickCount() - started) < timeout_ms) {
+        DWORD elapsed = GetTickCount() - started;
+        DWORD remaining = elapsed >= timeout_ms ? 0 : timeout_ms - elapsed;
+        DWORD wait_result = WaitForSingleObject(g_clipboard_update_event, remaining);
+        if (wait_result != WAIT_OBJECT_0) {
+            break;
+        }
+
+        if (GetClipboardSequenceNumber() != initial_sequence) {
+            InterlockedExchange(&g_clipboard_waiting, 0);
+            return TRUE;
+        }
+
+        ResetEvent(g_clipboard_update_event);
+    }
+
+    InterlockedExchange(&g_clipboard_waiting, 0);
     return FALSE;
 }
 
@@ -245,19 +569,22 @@ static BOOL SendVirtualKey(WORD vk, BOOL key_up) {
 }
 
 static BOOL SendCtrlChord(WORD vk) {
-    if (!SendVirtualKey(VK_CONTROL, FALSE)) return FALSE;
-    Sleep(10);
-    if (!SendVirtualKey(vk, FALSE)) {
-        SendVirtualKey(VK_CONTROL, TRUE);
-        return FALSE;
-    }
-    Sleep(10);
-    if (!SendVirtualKey(vk, TRUE)) {
-        SendVirtualKey(VK_CONTROL, TRUE);
-        return FALSE;
-    }
-    Sleep(10);
-    return SendVirtualKey(VK_CONTROL, TRUE);
+    INPUT inputs[4];
+
+    ZeroMemory(inputs, sizeof(inputs));
+    inputs[0].type = INPUT_KEYBOARD;
+    inputs[0].ki.wVk = VK_CONTROL;
+
+    inputs[1].type = INPUT_KEYBOARD;
+    inputs[1].ki.wVk = vk;
+
+    inputs[2] = inputs[1];
+    inputs[2].ki.dwFlags = KEYEVENTF_KEYUP;
+
+    inputs[3] = inputs[0];
+    inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
+
+    return SendInput(4, inputs, sizeof(INPUT)) == 4;
 }
 
 static BOOL IsEnglishLayout(const LayoutDef *layout) {
@@ -928,38 +1255,68 @@ const LayoutDef *GetCurrentLayoutDef(void) {
     return FindLayoutByLangId(lang_id);
 }
 
+static BOOL GetForegroundInputContext(HWND foreground, HWND *focus_hwnd, HWND *caret_hwnd) {
+    GUITHREADINFO info;
+    DWORD thread_id;
+
+    *focus_hwnd = NULL;
+    *caret_hwnd = NULL;
+
+    if (foreground == NULL) {
+        return FALSE;
+    }
+
+    thread_id = GetWindowThreadProcessId(foreground, NULL);
+    if (thread_id == 0) {
+        return FALSE;
+    }
+
+    ZeroMemory(&info, sizeof(info));
+    info.cbSize = sizeof(info);
+    if (!GetGUIThreadInfo(thread_id, &info)) {
+        return FALSE;
+    }
+
+    *focus_hwnd = info.hwndFocus;
+    *caret_hwnd = info.hwndCaret;
+    return TRUE;
+}
+
 BOOL TransformSelectedText(void) {
-    ClipboardTextBackup backup;
+    ClipboardSnapshot snapshot;
     DWORD initial_sequence;
     wchar_t *copied;
     wchar_t *converted;
     const LayoutDef *source;
     const LayoutDef *target;
+    UINT marker_format;
+    DWORD marker_value;
+    BOOL marker_written;
 
-    ZeroMemory(&backup, sizeof(backup));
+    ZeroMemory(&snapshot, sizeof(snapshot));
     copied = NULL;
     converted = NULL;
     source = NULL;
     target = NULL;
+    marker_format = GetClipboardMarkerFormat();
+    marker_value = (DWORD)InterlockedIncrement(&g_clipboard_marker_counter);
+    marker_written = FALSE;
 
-    if (!TryGetClipboardTextBackup(&backup)) {
-        LogDebug(L"Clipboard backup failed.");
+    if (!TrySnapshotClipboard(&snapshot)) {
+        LogDebug(L"Clipboard snapshot failed.");
         return FALSE;
     }
 
-    LogDebug(L"Clipboard backup ok. HasText=%d.", backup.has_text ? 1 : 0);
-
     if (!TryClearClipboard()) {
         LogDebug(L"Failed to clear clipboard.");
-        free(backup.text);
+        FreeClipboardSnapshot(&snapshot);
         return FALSE;
     }
 
     initial_sequence = GetClipboardSequenceNumber();
     if (!SendCtrlChord(VK_C_KEY)) {
         LogDebug(L"Send Ctrl+C failed.");
-        QueueRestoreClipboardText(&backup, 0);
-        free(backup.text);
+        QueueRestoreClipboardSnapshot(&snapshot, 0, FALSE, 0, 0);
         return FALSE;
     }
 
@@ -967,43 +1324,39 @@ BOOL TransformSelectedText(void) {
 
     if (!WaitForClipboardChange(initial_sequence, CLIPBOARD_WAIT_TIMEOUT_MS)) {
         LogDebug(L"Clipboard did not change after Ctrl+C.");
-        QueueRestoreClipboardText(&backup, 0);
-        free(backup.text);
+        QueueRestoreClipboardSnapshot(&snapshot, 0, FALSE, 0, 0);
         return FALSE;
     }
 
     if (!TryReadClipboardText(&copied) || copied == NULL || copied[0] == L'\0') {
         LogDebug(L"No selected text was copied.");
-        QueueRestoreClipboardText(&backup, 0);
-        free(backup.text);
+        QueueRestoreClipboardSnapshot(&snapshot, 0, FALSE, 0, 0);
         free(copied);
         return FALSE;
     }
 
-    LogDebug(L"Copied text: %ls", copied);
+    LogDebug(L"Selected text copied. Length=%zu.", wcslen(copied));
 
     if (!ResolveSelectedTextLayouts(copied, &source, &target)) {
         LogDebug(L"Could not detect source/target layouts.");
-        QueueRestoreClipboardText(&backup, 0);
-        free(backup.text);
+        QueueRestoreClipboardSnapshot(&snapshot, 0, FALSE, 0, 0);
         free(copied);
         return FALSE;
     }
 
     converted = ConvertTextDynamic(copied, source, target);
     if (converted == NULL) {
-        QueueRestoreClipboardText(&backup, 0);
-        free(backup.text);
+        QueueRestoreClipboardSnapshot(&snapshot, 0, FALSE, 0, 0);
         free(copied);
         return FALSE;
     }
 
-    LogDebug(L"Converted %ls -> %ls (%ls -> %ls).", copied, converted, source->code, target->code);
+    LogDebug(L"Selected text converted. Length=%zu -> %zu (%ls -> %ls).",
+        wcslen(copied), wcslen(converted), source->code, target->code);
 
-    if (!TryWriteClipboardText(converted)) {
+    if (!TryWriteClipboardTextForPaste(converted, marker_format, marker_value, &marker_written)) {
         LogDebug(L"Failed to write converted text.");
-        QueueRestoreClipboardText(&backup, 0);
-        free(backup.text);
+        QueueRestoreClipboardSnapshot(&snapshot, 0, FALSE, 0, 0);
         free(copied);
         free(converted);
         return FALSE;
@@ -1011,19 +1364,16 @@ BOOL TransformSelectedText(void) {
 
     if (!SendCtrlChord(VK_V_KEY)) {
         LogDebug(L"Send Ctrl+V failed.");
-        QueueRestoreClipboardText(&backup, 0);
-        free(backup.text);
+        QueueRestoreClipboardSnapshot(&snapshot, 0, marker_written, marker_format, marker_value);
         free(copied);
         free(converted);
         return FALSE;
     }
 
-    Sleep(PASTE_SETTLE_DELAY_MS);
     SwitchToLayoutByCode(target->code);
-    QueueRestoreClipboardText(&backup, PASTE_SETTLE_DELAY_MS);
+    QueueRestoreClipboardSnapshot(&snapshot, PASTE_SETTLE_DELAY_MS, marker_written, marker_format, marker_value);
     UpdateTrayLayoutIndicator(TRUE);
 
-    free(backup.text);
     free(copied);
     free(converted);
     return TRUE;
@@ -1035,6 +1385,8 @@ BOOL TransformLastWord(void) {
     const LayoutDef *source;
     const LayoutDef *target;
     HWND foreground;
+    HWND focus_hwnd = NULL;
+    HWND caret_hwnd = NULL;
     int length;
     size_t converted_length;
 
@@ -1044,6 +1396,12 @@ BOOL TransformLastWord(void) {
 
     foreground = GetForegroundWindow();
     if (foreground == NULL || foreground != g_last_word.hwnd) {
+        ResetLastWordTracker();
+        return FALSE;
+    }
+
+    GetForegroundInputContext(foreground, &focus_hwnd, &caret_hwnd);
+    if (focus_hwnd != g_last_word.focus_hwnd || caret_hwnd != g_last_word.caret_hwnd) {
         ResetLastWordTracker();
         return FALSE;
     }
@@ -1076,10 +1434,10 @@ BOOL TransformLastWord(void) {
         return FALSE;
     }
 
-    Sleep(10);
     SwitchToLayoutByCode(target->code);
     UpdateTrayLayoutIndicator(TRUE);
-    LogDebug(L"Last word converted: %ls -> %ls (%ls -> %ls).", original, converted, source->code, target->code);
+    LogDebug(L"Last word converted. Length=%zu -> %zu (%ls -> %ls).",
+        wcslen(original), wcslen(converted), source->code, target->code);
 
     converted_length = wcslen(converted);
     if (converted_length >= LAST_WORD_MAX) {
@@ -1087,6 +1445,8 @@ BOOL TransformLastWord(void) {
     }
 
     g_last_word.hwnd = foreground;
+    g_last_word.focus_hwnd = focus_hwnd;
+    g_last_word.caret_hwnd = caret_hwnd;
     g_last_word.source_layout = target;
     g_last_word.length = (int)converted_length;
     wcsncpy(g_last_word.text, converted, LAST_WORD_MAX - 1);

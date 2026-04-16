@@ -273,7 +273,9 @@ void LogDebug(const wchar_t *format, ...) {
     if (slash != NULL) {
         slash[1] = L'\0';
     }
-    wcscat(path, L"keyboard-switcher-c.log");
+    if (FAILED(StringCchCatW(path, sizeof(path) / sizeof(path[0]), L"keyboard-switcher-c.log"))) {
+        return;
+    }
 
     va_start(args, format);
     vswprintf(message, sizeof(message) / sizeof(message[0]), format, args);

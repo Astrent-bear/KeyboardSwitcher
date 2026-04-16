@@ -1032,7 +1032,12 @@ void ShowTrayMenu(void) {
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
     case WM_CREATE:
+        AddClipboardFormatListener(hwnd);
         SetTimer(hwnd, TIMER_LAYOUT, LAYOUT_TIMER_INTERVAL_MS, NULL);
+        return 0;
+
+    case WM_CLIPBOARDUPDATE:
+        NotifyClipboardUpdated();
         return 0;
 
     case WM_TIMER:
@@ -1054,7 +1059,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         return 0;
 
     case WMAPP_TRAYICON:
-        if (LOWORD(lParam) == WM_RBUTTONUP || LOWORD(lParam) == WM_CONTEXTMENU) {
+        if (LOWORD(lParam) == WM_LBUTTONDBLCLK) {
+            OpenSettingsWindow();
+        } else if (LOWORD(lParam) == WM_RBUTTONUP || LOWORD(lParam) == WM_CONTEXTMENU) {
             ShowTrayMenu();
         }
         return 0;
@@ -1078,6 +1085,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 
     case WM_DESTROY:
         KillTimer(hwnd, TIMER_LAYOUT);
+        RemoveClipboardFormatListener(hwnd);
         RemoveTrayIcon();
         RemoveKeyboardHook();
         RemoveMouseHook();

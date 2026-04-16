@@ -8,6 +8,10 @@ static BOOL IsModifierKey(DWORD vk) {
 }
 
 static BOOL ShouldResetWordTrackerForKey(DWORD vk) {
+    if (vk >= VK_F1 && vk <= VK_F24) {
+        return TRUE;
+    }
+
     switch (vk) {
     case VK_SPACE:
     case VK_RETURN:
@@ -23,6 +27,13 @@ static BOOL ShouldResetWordTrackerForKey(DWORD vk) {
     case VK_END:
     case VK_PRIOR:
     case VK_NEXT:
+    case VK_APPS:
+    case VK_SELECT:
+    case VK_CLEAR:
+    case VK_CANCEL:
+    case VK_SNAPSHOT:
+    case VK_SCROLL:
+    case VK_CAPITAL:
         return TRUE;
     default:
         return FALSE;
@@ -48,6 +59,53 @@ static BOOL HasResetModifierCombo(DWORD vk) {
     }
 
     if ((lwin & 0x8000) != 0 || (rwin & 0x8000) != 0) {
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+static BOOL GetForegroundInputContext(HWND foreground, HWND *focus_hwnd, HWND *caret_hwnd) {
+    GUITHREADINFO info;
+    DWORD thread_id;
+
+    *focus_hwnd = NULL;
+    *caret_hwnd = NULL;
+
+    if (foreground == NULL) {
+        return FALSE;
+    }
+
+    thread_id = GetWindowThreadProcessId(foreground, NULL);
+    if (thread_id == 0) {
+        return FALSE;
+    }
+
+    ZeroMemory(&info, sizeof(info));
+    info.cbSize = sizeof(info);
+    if (!GetGUIThreadInfo(thread_id, &info)) {
+        return FALSE;
+    }
+
+    *focus_hwnd = info.hwndFocus;
+    *caret_hwnd = info.hwndCaret;
+    return TRUE;
+}
+
+static BOOL LastWordContextChanged(HWND foreground, HWND focus_hwnd, HWND caret_hwnd) {
+    if (g_last_word.length <= 0) {
+        return FALSE;
+    }
+
+    if (g_last_word.hwnd != foreground) {
+        return TRUE;
+    }
+
+    if (g_last_word.focus_hwnd != focus_hwnd) {
+        return TRUE;
+    }
+
+    if (g_last_word.caret_hwnd != caret_hwnd) {
         return TRUE;
     }
 
@@ -98,7 +156,7 @@ static void BackspaceLastWordTracker(void) {
     }
 }
 
-static void AppendTrackedChars(HWND foreground, const LayoutDef *layout, const wchar_t *chars, int count) {
+static void AppendTrackedChars(HWND foreground, HWND focus_hwnd, HWND caret_hwnd, const LayoutDef *layout, const wchar_t *chars, int count) {
     int i;
 
     if (foreground == NULL || layout == NULL) {
@@ -106,7 +164,7 @@ static void AppendTrackedChars(HWND foreground, const LayoutDef *layout, const w
         return;
     }
 
-    if (g_last_word.length > 0 && g_last_word.hwnd != foreground) {
+    if (LastWordContextChanged(foreground, focus_hwnd, caret_hwnd)) {
         ResetLastWordTracker();
     }
 
@@ -117,6 +175,8 @@ static void AppendTrackedChars(HWND foreground, const LayoutDef *layout, const w
 
     if (g_last_word.length == 0) {
         g_last_word.hwnd = foreground;
+        g_last_word.focus_hwnd = focus_hwnd;
+        g_last_word.caret_hwnd = caret_hwnd;
         g_last_word.source_layout = layout;
     }
 
@@ -129,6 +189,8 @@ static void AppendTrackedChars(HWND foreground, const LayoutDef *layout, const w
         if (g_last_word.length >= LAST_WORD_MAX - 1) {
             ResetLastWordTracker();
             g_last_word.hwnd = foreground;
+            g_last_word.focus_hwnd = focus_hwnd;
+            g_last_word.caret_hwnd = caret_hwnd;
             g_last_word.source_layout = layout;
         }
 
@@ -139,6 +201,8 @@ static void AppendTrackedChars(HWND foreground, const LayoutDef *layout, const w
 
 void ResetLastWordTracker(void) {
     g_last_word.hwnd = NULL;
+    g_last_word.focus_hwnd = NULL;
+    g_last_word.caret_hwnd = NULL;
     g_last_word.length = 0;
     g_last_word.text[0] = L'\0';
     g_last_word.source_layout = NULL;
@@ -146,6 +210,8 @@ void ResetLastWordTracker(void) {
 
 void UpdateLastWordTrackerFromKey(const KBDLLHOOKSTRUCT *kbd) {
     HWND foreground = GetForegroundWindow();
+    HWND focus_hwnd = NULL;
+    HWND caret_hwnd = NULL;
     const LayoutDef *current_layout = GetCurrentLayoutDef();
     wchar_t chars[8];
     int char_count;
@@ -155,7 +221,8 @@ void UpdateLastWordTrackerFromKey(const KBDLLHOOKSTRUCT *kbd) {
         return;
     }
 
-    if (g_last_word.length > 0 && g_last_word.hwnd != foreground) {
+    GetForegroundInputContext(foreground, &focus_hwnd, &caret_hwnd);
+    if (LastWordContextChanged(foreground, focus_hwnd, caret_hwnd)) {
         ResetLastWordTracker();
     }
 
@@ -176,10 +243,13 @@ void UpdateLastWordTrackerFromKey(const KBDLLHOOKSTRUCT *kbd) {
 
     char_count = TranslateHookKeyToChars(kbd, chars, (int)(sizeof(chars) / sizeof(chars[0])));
     if (char_count <= 0) {
+        if (!IsModifierKey(kbd->vkCode)) {
+            ResetLastWordTracker();
+        }
         return;
     }
 
-    AppendTrackedChars(foreground, current_layout, chars, char_count);
+    AppendTrackedChars(foreground, focus_hwnd, caret_hwnd, current_layout, chars, char_count);
 }
 
 BOOL IsKeyDownMessage(WPARAM wParam) {
@@ -250,19 +320,19 @@ static void HandleTransform(TransformRequestMode mode) {
 
     case TRANSFORM_MODE_COMBINED:
     default:
+        if (TransformLastWord()) {
+            PlaySwitchSound();
+            return;
+        }
+
+        LogDebug(L"TransformLastWord failed. Trying selected text.");
         if (TransformSelectedText()) {
             ResetLastWordTracker();
             PlaySwitchSound();
             return;
         }
 
-        LogDebug(L"TransformSelectedText failed. Trying last word.");
-        if (TransformLastWord()) {
-            PlaySwitchSound();
-            return;
-        }
-
-        LogDebug(L"TransformLastWord failed.");
+        LogDebug(L"TransformSelectedText failed.");
         return;
     }
 }

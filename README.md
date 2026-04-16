@@ -24,7 +24,7 @@ The app converts text by key-position mapping, not dictionary translation.
 2. Розпакуйте zip-архів.
 3. Запустіть `KeyboardSwitcherC.exe`.
 4. Програма стартує в системному треї.
-5. Натисніть правою кнопкою по іконці в треї, щоб відкрити `Settings...` або завершити роботу.
+5. Двічі натисніть лівою кнопкою по іконці в треї, щоб відкрити налаштування, або натисніть правою кнопкою для меню.
 
 ### Поведінка за замовчуванням
 
@@ -33,8 +33,8 @@ The app converts text by key-position mapping, not dictionary translation.
   - перетворення виділеного тексту
   - перетворення останнього слова
 - Якщо обидві дії використовують одну гарячу клавішу, програма пробує:
-  1. перетворити виділений текст
-  2. якщо не вийшло, перетворити останнє слово
+  1. перетворити останнє слово, якщо трекер слова ще валідний
+  2. якщо слово було скинуте або не підходить, перетворити виділений текст
 - Звук перемикання за замовчуванням вимкнений
 - Debug log за замовчуванням вимкнений
 - Налаштування зберігаються в `%APPDATA%\KeyboardSwitcherC\settings.ini`
@@ -43,7 +43,8 @@ The app converts text by key-position mapping, not dictionary translation.
 
 - прихована Win32-програма з іконкою в треї без головного вікна
 - перетворення виділеного тексту по гарячій клавіші
-- перетворення останнього набраного слова по гарячій клавіші
+- швидке перетворення останнього набраного слова по гарячій клавіші
+- безпечніше перетворення виділеного тексту з full-format snapshot буфера обміну
 - перемикання розкладки за поточним порядком мов введення Windows
 - резервний внутрішній цикл, якщо системний порядок визначити не вдалося
 - live-apply вікно налаштувань без `Save/Cancel`
@@ -98,6 +99,9 @@ Self-test перевіряє:
   - підтримуються в коді
   - і водночас встановлені у вашій системі Windows
 - Порядок циклу береться зі списку мов введення Windows. Якщо його не вдається використати, програма переходить на внутрішній резервний цикл.
+- Для однакової гарячої клавіші першим виконується сценарій останнього слова. Сценарій виділеного тексту використовується як fallback, коли слово було скинуте або контекст введення змінився.
+- Сценарій виділеного тексту тимчасово використовує буфер обміну, але намагається зберегти всі підтримувані формати та не відновлювати старий snapshot, якщо clipboard уже змінила інша програма.
+- Debug log не записує сам текст користувача, лише технічні події, довжини рядків і коди розкладок.
 - Деякі програми та ігри працюють із введенням нестандартно, тому поведінка може відрізнятися залежно від цільового застосунку.
 - Для частини екзотичніших або правосторонніх розкладок практичне перетворення сильно залежить від того, як конкретний застосунок обробляє Unicode-ввід і clipboard.
 
@@ -133,6 +137,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 
 - Як долучитися: [CONTRIBUTING.md](./CONTRIBUTING.md)
 - Політика безпеки: [SECURITY.md](./SECURITY.md)
+- Історія змін: [CHANGELOG.md](./CHANGELOG.md)
 - Ліцензія: [LICENSE](./LICENSE)
 
 ---
@@ -155,7 +160,7 @@ This is not dictionary translation. The app works through key-position mapping.
 2. Extract the zip archive.
 3. Run `KeyboardSwitcherC.exe`.
 4. The app starts in the system tray.
-5. Right-click the tray icon to open `Settings...` or exit the app.
+5. Double-click the tray icon to open settings, or right-click it to open the tray menu.
 
 ### Default behavior
 
@@ -164,8 +169,8 @@ This is not dictionary translation. The app works through key-position mapping.
   - selected text conversion
   - last word conversion
 - If both actions use the same hotkey, the app tries:
-  1. selected text conversion
-  2. last word conversion as fallback
+  1. last word conversion when the word tracker is still valid
+  2. selected text conversion as fallback when the word was reset or the input context changed
 - Switch sound is disabled by default
 - Debug logging is disabled by default
 - Settings are stored in `%APPDATA%\KeyboardSwitcherC\settings.ini`
@@ -174,7 +179,8 @@ This is not dictionary translation. The app works through key-position mapping.
 
 - hidden Win32 application with tray icon and no main window
 - selected-text conversion by hotkey
-- last typed word conversion by hotkey
+- fast last typed word conversion by hotkey
+- safer selected-text conversion with full-format clipboard snapshots
 - layout switching by the current Windows input-language order
 - fallback internal cycle if the system order cannot be resolved
 - live-apply settings window without `Save/Cancel`
@@ -230,6 +236,9 @@ Some warnings are expected for certain real-world layouts because a few keyboard
   - and installed in Windows
   can participate in actual text conversion.
 - The layout cycle follows the Windows input-language order when possible. If that order cannot be used, the app falls back to an internal cycle.
+- When both actions share the same hotkey, last-word conversion is tried first. Selected-text conversion is used as fallback when the tracked word is invalid or the input context changed.
+- Selected-text conversion temporarily uses the clipboard, but it tries to preserve all supported clipboard formats and avoids restoring an old snapshot if another app has already changed the clipboard.
+- Debug logs do not store the user's actual text; they only contain technical events, string lengths, and layout codes.
 - Some applications and games expose text input in non-standard ways, so behavior may still vary by target app.
 - For some more exotic or right-to-left layouts, real-world behavior also depends on how the target application handles Unicode input and clipboard operations.
 
@@ -265,4 +274,5 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 
 - Contribution guide: [CONTRIBUTING.md](./CONTRIBUTING.md)
 - Security policy: [SECURITY.md](./SECURITY.md)
+- Changelog: [CHANGELOG.md](./CHANGELOG.md)
 - License: [LICENSE](./LICENSE)
