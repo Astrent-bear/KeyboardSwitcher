@@ -2,5 +2,6 @@
 #define KEYBOARD_SWITCHER_C_RESOURCE_H
 
 #define IDI_APP_ICON 101
+#define IDI_GITHUB_ICON 102
 
 #endif

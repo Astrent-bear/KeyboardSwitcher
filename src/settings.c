@@ -254,11 +254,60 @@ void PlaySwitchSound(void) {
     MessageBeep(MB_OK);
 }
 
+BOOL BuildDebugLogFilePath(wchar_t *path, size_t capacity) {
+    wchar_t *slash;
+
+    if (path == NULL || capacity == 0) {
+        return FALSE;
+    }
+
+    if (GetModuleFileNameW(NULL, path, (DWORD)capacity) == 0) {
+        return FALSE;
+    }
+
+    slash = wcsrchr(path, L'\\');
+    if (slash != NULL) {
+        slash[1] = L'\0';
+    }
+
+    return SUCCEEDED(StringCchCatW(path, capacity, L"keyboard-switcher-c.log"));
+}
+
+BOOL DebugLogFileExists(void) {
+    wchar_t path[MAX_PATH];
+    DWORD attributes;
+
+    if (!BuildDebugLogFilePath(path, sizeof(path) / sizeof(path[0]))) {
+        return FALSE;
+    }
+
+    attributes = GetFileAttributesW(path);
+    return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+BOOL DeleteDebugLogFile(void) {
+    wchar_t path[MAX_PATH];
+    DWORD attributes;
+
+    if (!BuildDebugLogFilePath(path, sizeof(path) / sizeof(path[0]))) {
+        return FALSE;
+    }
+
+    attributes = GetFileAttributesW(path);
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        return TRUE;
+    }
+    if ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        return FALSE;
+    }
+
+    return DeleteFileW(path);
+}
+
 void LogDebug(const wchar_t *format, ...) {
     wchar_t message[1024];
     wchar_t line[1400];
     wchar_t path[MAX_PATH];
-    wchar_t *slash;
     FILE *file;
     SYSTEMTIME st;
     va_list args;
@@ -268,12 +317,7 @@ void LogDebug(const wchar_t *format, ...) {
     }
 
     GetLocalTime(&st);
-    GetModuleFileNameW(NULL, path, MAX_PATH);
-    slash = wcsrchr(path, L'\\');
-    if (slash != NULL) {
-        slash[1] = L'\0';
-    }
-    if (FAILED(StringCchCatW(path, sizeof(path) / sizeof(path[0]), L"keyboard-switcher-c.log"))) {
+    if (!BuildDebugLogFilePath(path, sizeof(path) / sizeof(path[0]))) {
         return;
     }
 

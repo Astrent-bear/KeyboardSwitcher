@@ -63,6 +63,8 @@
 #define IDC_SETTINGS_GROUP_SELECTED 41020
 #define IDC_SETTINGS_GROUP_LASTWORD 41021
 #define IDC_SETTINGS_BRAND 41022
+#define IDC_SETTINGS_LOG_PATH 41023
+#define IDC_SETTINGS_LOG_DELETE 41024
 
 #ifdef _DEBUG
 #define APP_VERSION L"0.3.0-debug"
@@ -157,6 +159,8 @@ typedef struct SettingsControls {
     HWND version_value;
     HWND store_button;
     HWND brand_logo;
+    HWND log_path_link;
+    HWND log_delete_link;
 } SettingsControls;
 
 typedef enum UiLanguage {
@@ -196,6 +200,9 @@ void FormatHotkeyBinding(const HotkeyBinding *binding, wchar_t *buffer, size_t c
 BOOL HotkeyBindingsEqual(const HotkeyBinding *left, const HotkeyBinding *right);
 BOOL HotkeyOwnsEvent(const HotkeyBinding *binding, const KBDLLHOOKSTRUCT *kbd);
 void PlaySwitchSound(void);
+BOOL BuildDebugLogFilePath(wchar_t *path, size_t capacity);
+BOOL DebugLogFileExists(void);
+BOOL DeleteDebugLogFile(void);
 void LogDebug(const wchar_t *format, ...);
 BOOL IsAutostartEnabled(void);
 BOOL SetAutostartEnabled(BOOL enabled);

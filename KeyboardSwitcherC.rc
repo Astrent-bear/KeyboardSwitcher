@@ -1,3 +1,4 @@
 #include "src\\resource.h"
 
 IDI_APP_ICON ICON "resources\\cwitcher.ico"
+IDI_GITHUB_ICON ICON "resources\\github-invertocat.ico"
