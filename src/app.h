@@ -71,9 +71,9 @@
 #define IDC_SETTINGS_LOG_DELETE 41024
 
 #ifdef _DEBUG
-#define APP_VERSION L"0.6.0-debug"
+#define APP_VERSION L"0.6.1-debug"
 #else
-#define APP_VERSION L"0.6.0"
+#define APP_VERSION L"0.6.1"
 #endif
 
 #define DEFAULT_SELECTED_HOTKEY_VK VK_PAUSE_KEY

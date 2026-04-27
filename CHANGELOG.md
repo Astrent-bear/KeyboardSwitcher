@@ -4,6 +4,22 @@
 
 ---
 
+## v0.6.1 - release build cleanup
+
+### Українською
+
+- Оновлено відображення версії до `0.6.1`.
+- Виправлено `build.ps1`, щоб він збирав актуальний `Cwitcher.sln` через MSBuild, а не старий однофайловий прототип.
+- Очищено релізну збірку від застарілих артефактів зі старою назвою.
+
+### English
+
+- Updated the displayed app version to `0.6.1`.
+- Fixed `build.ps1` so it builds the current `Cwitcher.sln` through MSBuild instead of the old single-file prototype.
+- Cleaned the release build output from stale artifacts with the old name.
+
+---
+
 ## v0.6.0 - Cwitcher naming and Store preparation
 
 ### Українською
